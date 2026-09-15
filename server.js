@@ -15,6 +15,10 @@ const http = require("http");
 
 const app = express();
 app.use(express.json());
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
+  next();
+});
 
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.API_KEY; // set this in Render's environment variables
