@@ -23,6 +23,17 @@ app.use((req, res, next) => {
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.API_KEY; // set this in Render's environment variables
 
+// Serial queue: this free-tier instance has very limited memory, and running
+// two FFmpeg renders at once can exhaust it and crash the whole service.
+// Every /make-video request goes through this queue so only one render ever
+// runs at a time — extra requests simply wait their turn instead of racing.
+let queue = Promise.resolve();
+function enqueue(taskFn) {
+  const result = queue.then(taskFn, taskFn);
+  queue = result.catch(() => {});
+  return result;
+}
+
 app.post("/make-video", async (req, res) => {
   if (!API_KEY || req.headers["x-api-key"] !== API_KEY) {
     return res.status(401).json({ error: "Unauthorized." });
@@ -32,8 +43,19 @@ app.post("/make-video", async (req, res) => {
   if (!imageUrl) {
     return res.status(400).json({ error: "Missing imageUrl." });
   }
-  const duration = Number(durationSeconds) > 0 ? Number(durationSeconds) : 3;
 
+  try {
+    const videoBuffer = await enqueue(() => renderVideo(imageUrl, durationSeconds));
+    res.setHeader("Content-Type", "video/mp4");
+    res.send(videoBuffer);
+  } catch (err) {
+    console.error(err);
+    res.status(502).json({ error: `Video render failed: ${err.message}` });
+  }
+});
+
+async function renderVideo(imageUrl, durationSeconds) {
+  const duration = Number(durationSeconds) > 0 ? Number(durationSeconds) : 3;
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "mysmm-"));
   const inputPath = path.join(workDir, "input.png");
   const outputPath = path.join(workDir, "output.mp4");
@@ -41,17 +63,11 @@ app.post("/make-video", async (req, res) => {
   try {
     await downloadFile(imageUrl, inputPath);
     await runFfmpeg(inputPath, outputPath, duration);
-
-    const videoBuffer = fs.readFileSync(outputPath);
-    res.setHeader("Content-Type", "video/mp4");
-    res.send(videoBuffer);
-  } catch (err) {
-    console.error(err);
-    res.status(502).json({ error: `Video render failed: ${err.message}` });
+    return fs.readFileSync(outputPath);
   } finally {
     fs.rm(workDir, { recursive: true, force: true }, () => {});
   }
-});
+}
 
 app.get("/health", (req, res) => res.json({ ok: true }));
 
@@ -84,14 +100,18 @@ function runFfmpeg(inputPath, outputPath, duration) {
     // Ken Burns: slow zoom in from 1.0x to ~1.15x over the clip, output vertical
     // 1080x1920 (Reels aspect), with a silent audio track (some validators
     // reject video-only files), H.264 + yuv420p as required by Instagram.
+    // zoompan at full 1080x1920 for every frame is memory-heavy on Render's
+    // free tier (512MB) — work at half resolution during the zoom, then
+    // scale up once at the end, which uses much less memory per frame.
     const args = [
       "-y",
       "-loop", "1",
       "-i", inputPath,
       "-f", "lavfi",
       "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-      "-vf", `zoompan=z='min(zoom+0.0012,1.15)':d=${frames}:s=1080x1920:fps=${fps},format=yuv420p`,
+      "-vf", `scale=540:960,zoompan=z='min(zoom+0.0012,1.15)':d=${frames}:s=540:960:fps=${fps},scale=1080:1920,format=yuv420p`,
       "-c:v", "libx264",
+      "-preset", "veryfast",
       "-c:a", "aac",
       "-t", String(duration),
       "-shortest",
