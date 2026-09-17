@@ -114,6 +114,12 @@ async function composeImage({ photoUrl, textCardBase64, width, height, imageHeig
 }
 
 app.get("/health", (req, res) => res.json({ ok: true }));
+app.get("/version", (req, res) =>
+  res.json({
+    commit: process.env.RENDER_GIT_COMMIT || "unknown",
+    deployedAt: process.env.RENDER_INSTANCE_ID || "unknown",
+  })
+);
 
 app.listen(PORT, () => console.log(`mySMM video service listening on ${PORT}`));
 
@@ -153,7 +159,7 @@ function runFfmpeg(inputPath, outputPath, duration) {
       "-i", inputPath,
       "-f", "lavfi",
       "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-      "-vf", `scale=540:960,zoompan=z='min(zoom+0.0012,1.15)':d=${frames}:s=540:960:fps=${fps},scale=1080:1920,format=yuv420p`,
+      "-vf", `scale=540x960,zoompan=z='min(zoom+0.0012,1.15)':d=${frames}:s=540x960:fps=${fps},scale=1080x1920,format=yuv420p`,
       "-c:v", "libx264",
       "-preset", "veryfast",
       "-c:a", "aac",
