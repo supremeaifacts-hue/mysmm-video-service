@@ -54,6 +54,34 @@ app.post("/make-video", async (req, res) => {
   }
 });
 
+// POST /compose-image
+// Body: { photoUrl, textCardBase64 (a PNG, base64-encoded, sized width x (height-imageHeight)),
+//         width, height, imageHeight }
+// Crops/scales the photo to fill the top `imageHeight` px, stamps the text
+// card onto the remaining bottom portion, and returns one flattened JPEG.
+// This is a single-frame operation — much lighter than the video render.
+app.post("/compose-image", async (req, res) => {
+  if (!API_KEY || req.headers["x-api-key"] !== API_KEY) {
+    return res.status(401).json({ error: "Unauthorized." });
+  }
+
+  const { photoUrl, textCardBase64, width, height, imageHeight } = req.body || {};
+  if (!photoUrl || !textCardBase64 || !width || !height || !imageHeight) {
+    return res.status(400).json({ error: "Missing photoUrl, textCardBase64, width, height, or imageHeight." });
+  }
+
+  try {
+    const imageBuffer = await enqueue(() =>
+      composeImage({ photoUrl, textCardBase64, width, height, imageHeight })
+    );
+    res.setHeader("Content-Type", "image/jpeg");
+    res.send(imageBuffer);
+  } catch (err) {
+    console.error(err);
+    res.status(502).json({ error: `Compose failed: ${err.message}` });
+  }
+});
+
 async function renderVideo(imageUrl, durationSeconds) {
   const duration = Number(durationSeconds) > 0 ? Number(durationSeconds) : 3;
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "mysmm-"));
@@ -63,6 +91,22 @@ async function renderVideo(imageUrl, durationSeconds) {
   try {
     await downloadFile(imageUrl, inputPath);
     await runFfmpeg(inputPath, outputPath, duration);
+    return fs.readFileSync(outputPath);
+  } finally {
+    fs.rm(workDir, { recursive: true, force: true }, () => {});
+  }
+}
+
+async function composeImage({ photoUrl, textCardBase64, width, height, imageHeight }) {
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "mysmm-compose-"));
+  const photoPath = path.join(workDir, "photo.jpg");
+  const cardPath = path.join(workDir, "card.png");
+  const outputPath = path.join(workDir, "output.jpg");
+
+  try {
+    await downloadFile(photoUrl, photoPath);
+    fs.writeFileSync(cardPath, Buffer.from(textCardBase64, "base64"));
+    await runFfmpegCompose(photoPath, cardPath, outputPath, width, height, imageHeight);
     return fs.readFileSync(outputPath);
   } finally {
     fs.rm(workDir, { recursive: true, force: true }, () => {});
@@ -116,6 +160,34 @@ function runFfmpeg(inputPath, outputPath, duration) {
       "-t", String(duration),
       "-shortest",
       "-movflags", "+faststart",
+      outputPath,
+    ];
+
+    const proc = spawn("ffmpeg", args);
+    let stderr = "";
+    proc.stderr.on("data", (chunk) => (stderr += chunk.toString()));
+    proc.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg exited with code ${code}: ${stderr.slice(-500)}`));
+    });
+    proc.on("error", reject);
+  });
+}
+
+// Scales/crops the photo to fill the top `imageHeight` px (object-fit:cover
+// equivalent), then overlays the pre-rendered text card at the bottom.
+// Single frame — no video encoding, so this is fast and light on memory.
+function runFfmpegCompose(photoPath, cardPath, outputPath, width, height, imageHeight) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      "-y",
+      "-i", photoPath,
+      "-i", cardPath,
+      "-filter_complex",
+      `[0:v]scale=w=${width}:h=${imageHeight}:force_original_aspect_ratio=increase,crop=${width}:${imageHeight}[bg];[bg][1:v]overlay=0:${imageHeight}[out]`,
+      "-map", "[out]",
+      "-frames:v", "1",
+      "-q:v", "3",
       outputPath,
     ];
 
