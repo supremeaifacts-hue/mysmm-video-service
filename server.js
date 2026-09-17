@@ -144,22 +144,15 @@ function downloadFile(url, destPath) {
 
 function runFfmpeg(inputPath, outputPath, duration) {
   return new Promise((resolve, reject) => {
-    const fps = 25;
-    const frames = Math.round(duration * fps);
-
-    // Ken Burns: slow zoom in from 1.0x to ~1.15x over the clip, output vertical
-    // 1080x1920 (Reels aspect), with a silent audio track (some validators
-    // reject video-only files), H.264 + yuv420p as required by Instagram.
-    // zoompan at full 1080x1920 for every frame is memory-heavy on Render's
-    // free tier (512MB) — work at half resolution during the zoom, then
-    // scale up once at the end, which uses much less memory per frame.
+    // Plain static hold — no zoom/pan, just the image held for the full
+    // duration, scaled to fill the vertical Reels frame (1080x1920).
     const args = [
       "-y",
       "-loop", "1",
       "-i", inputPath,
       "-f", "lavfi",
       "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-      "-vf", `scale=540x960,zoompan=z='min(zoom+0.0012,1.15)':d=${frames}:s=540x960:fps=${fps},scale=1080x1920,format=yuv420p`,
+      "-vf", `scale=w=1080:h=1920:force_original_aspect_ratio=increase,crop=1080:1920,format=yuv420p`,
       "-c:v", "libx264",
       "-preset", "veryfast",
       "-c:a", "aac",
