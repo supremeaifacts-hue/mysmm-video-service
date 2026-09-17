@@ -184,7 +184,7 @@ function runFfmpegCompose(photoPath, cardPath, outputPath, width, height, imageH
       "-i", photoPath,
       "-i", cardPath,
       "-filter_complex",
-      `[0:v]scale=w=${width}:h=${imageHeight}:force_original_aspect_ratio=increase,crop=${width}:${imageHeight}[bg];[bg][1:v]overlay=0:${imageHeight}[out]`,
+      `[0:v]scale=w=${width}:h=${imageHeight}:force_original_aspect_ratio=increase,crop=${width}:${imageHeight},pad=${width}:${height}:0:0:black[bg];[bg][1:v]overlay=0:${imageHeight}[out]`,
       "-map", "[out]",
       "-frames:v", "1",
       "-q:v", "3",
